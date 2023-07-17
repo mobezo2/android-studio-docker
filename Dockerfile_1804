@@ -1,0 +1,130 @@
+FROM ubuntu:18.04
+
+LABEL Simon Egli <docker_android_studio_860dd6@egli.online>
+
+ARG USER=android
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN dpkg --add-architecture i386
+RUN apt-get update && apt-get install -y \
+        build-essential git neovim wget unzip sudo \
+        libc6:i386 libncurses5:i386 libstdc++6:i386 lib32z1 libbz2-1.0:i386 \
+        libxrender1 libxtst6 libxi6 libfreetype6 libxft2 xz-utils vim\
+	qemu qemu-kvm libvirt-bin ubuntu-vm-builder bridge-utils libnotify4 libglu1 libqt5widgets5 openjdk-8-jdk openjdk-11-jdk xvfb \
+        && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+RUN groupadd -g 1000 -r $USER
+RUN useradd -u 1000 -g 1000 --create-home -r $USER
+RUN adduser $USER libvirt
+RUN adduser $USER kvm
+#Change password
+RUN echo "$USER:$USER" | chpasswd
+#Make sudo passwordless
+RUN echo "${USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-$USER
+RUN usermod -aG sudo $USER
+RUN usermod -aG plugdev $USER
+
+VOLUME /androidstudio-data
+RUN chown $USER:$USER /androidstudio-data
+
+COPY provisioning/docker_entrypoint.sh /usr/local/bin/docker_entrypoint.sh
+COPY provisioning/ndkTests.sh /usr/local/bin/ndkTests.sh
+RUN chmod +x /usr/local/bin/*
+COPY provisioning/51-android.rules /etc/udev/rules.d/51-android.rules
+
+USER $USER
+
+WORKDIR /home/$USER
+
+#Install Flutter
+ARG FLUTTER_URL=https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_1.22.2-stable.tar.xz
+ARG FLUTTER_VERSION=1.22.2
+
+RUN wget "$FLUTTER_URL" -O flutter.tar.xz
+RUN tar -xvf flutter.tar.xz
+RUN rm flutter.tar.xz
+
+#Android Studio
+ARG ANDROID_STUDIO_URL=https://redirector.gvt1.com/edgedl/android/studio/ide-zips/2022.1.1.21/android-studio-2022.1.1.21-linux.tar.gz
+ARG ANDROID_STUDIO_VERSION=2022.1.1.21
+
+RUN wget "$ANDROID_STUDIO_URL" -O android-studio.tar.gz
+RUN tar xzvf android-studio.tar.gz
+RUN rm android-studio.tar.gz
+
+RUN ln -s /studio-data/profile/AndroidStudio$ANDROID_STUDIO_VERSION .AndroidStudio$ANDROID_STUDIO_VERSION
+RUN ln -s /studio-data/Android Android
+RUN ln -s /studio-data/profile/android .android
+RUN ln -s /studio-data/profile/java .java
+RUN ln -s /studio-data/profile/gradle .gradle
+ENV ANDROID_EMULATOR_USE_SYSTEM_LIBS=1
+
+WORKDIR /home/$USER
+
+
+USER root
+
+RUN apt-get update && apt-get install -y apt-utils ninja-build autoconf libtool swig swig3.0 ant dos2unix python3-pip
+RUN pip3 install conan==1.60.0
+
+# CMake install (requires 3.14.7)
+RUN sudo apt-get purge cmake
+
+WORKDIR /usr/local    
+RUN wget https://cmake.org/files/v3.14/cmake-3.14.7-Linux-x86_64.tar.gz \
+    && tar xzf cmake-3.14.7-Linux-x86_64.tar.gz  \
+    && rm -rf cmake-3.14.7-Linux-x86_64.tar.gz  \
+    && cd cmake-3.14.7-Linux-x86_64  \
+    && ./bin/cmake --version
+
+
+RUN wget https://dl.google.com/android/repository/android-ndk-r12b-linux-x86_64.zip
+RUN cp android-ndk-r12b-linux-x86_64.zip /opt/android-ndk-r12b-linux-x86_64.zip
+WORKDIR /opt/
+RUN unzip android-ndk-r12b-linux-x86_64.zip
+
+USER $USER
+
+WORKDIR /home/$USER
+
+RUN conan profile new default --detect
+RUN conan profile update settings.compiler.version=8 default
+
+RUN echo "export PATH=\"/usr/bin:/usr/local:/home/$USER/.local/bin:$PATH\"" >> .bashrc
+RUN echo "export JAVA_HOME=\"/usr/lib/jvm/jdk8u372-b07\"" >> .bashrc
+RUN echo "export ANDROID_NDK=\"/opt/android-ndk-r12b\"" >> .bashrc
+RUN echo "export ANDROID_NDK_HOME=\"/opt/android-ndk-r12b\"" >> .bashrc
+RUN echo "export ANDROID_SDK_ROOT=\"/home/$USER/Android/Sdk\"" >> .bashrc
+
+RUN echo "export PATH=\"/usr/bin:/home/$USER/.local/bin:$PATH\"" >> .bashrc
+
+RUN echo "export PATH="/usr/local/cmake-3.14.7-Linux-x86_64/bin:$PATH"" >>.bashrc
+RUN echo "export PATH="/usr/lib/jvm/jdk8u372-b07/bin:$PATH"" >> ~/.bashrc
+RUN echo "export PATH="/home/android/.local/bin:$PATH"" >> ~/.bashrc
+
+
+
+# Delete system version of java that cause build issues 
+# Leaving this off for now.
+USER root
+RUN rm -rf /usr/lib/jvm/java*
+RUN rm -rf /usr/lib/jvm/openjdk-11
+WORKDIR /usr/lib/jvm
+
+# MOB - need to manually download this version of 1.8 JDK from Adoptium and place it in the same folder as this dockerfile
+COPY OpenJDK8U-jdk_x64_linux_hotspot_8u372b07.tar.gz OpenJDK8U-jdk_x64_linux_hotspot_8u372b07.tar.gz
+RUN tar xzf OpenJDK8U-jdk_x64_linux_hotspot_8u372b07.tar.gz
+
+RUN apt-get install -y tclsh
+RUN apt-get install -y maven
+
+USER $USER
+WORKDIR /home/$USER
+
+RUN echo "forcing entrypoint.sh to run as sudo"
+
+
+
+ENTRYPOINT [ "/usr/local/bin/docker_entrypoint.sh" ]
